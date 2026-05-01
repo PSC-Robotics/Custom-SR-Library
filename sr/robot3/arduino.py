@@ -27,7 +27,7 @@ else:
 SUPPORTED_VID_PIDS = {
     (0x2341, 0x0043),  # Arduino Uno rev 3
     (0x2A03, 0x0043),  # Arduino Uno rev 3
-    #//(0x2341, 0x1002),  # Arduino Uno r4 WiFi
+    (0x2341, 0x1002),  # Arduino Uno r4 WiFi
     (0x1A86, 0x7523),  # Uno
     (0x10C4, 0xEA60),  # Ruggeduino
     (0x16D0, 0x0613),  # Ruggeduino
