@@ -19,6 +19,7 @@ TRACE = 5
 def add_trace_level() -> None:
     """Set logging to label messages at level 5 as "TRACE"."""
     logging.addLevelName(TRACE, "TRACE")
+    print("Loading custom srobo")
 
 
 def setup_logging(debug_logging: bool, trace_logging: bool) -> None:

@@ -11,7 +11,6 @@ from types import MappingProxyType
 from typing import Mapping, Optional, final
 
 from . import game_specific, timeout
-from ._version import __version__
 from .arduino import Arduino
 from .astoria import Metadata, RobotMode, init_astoria_mqtt
 from .camera import AprilCamera, _setup_cameras
@@ -64,7 +63,9 @@ class Robot(metaclass=FinalMeta):
         manual_boards: Optional[dict[str, list[str]]] = None,
         raw_ports: Optional[list[tuple[str, int]]] = None,
         no_powerboard: bool = False,
+        customCamera: bool = False,
     ) -> None:
+        logger.info("Initializing Custom Robot instance.")
         self._lock: TimeServer | socket | None
         if IN_SIMULATOR:
             self._lock = TimeServer.initialise()
@@ -80,7 +81,7 @@ class Robot(metaclass=FinalMeta):
         setup_logging(debug, trace_logging)
         ensure_atexit_on_term()
 
-        logger.info(f"sr.robot3 version {__version__}")
+        #logger.info(f"sr.robot3 version {__version__}")
 
         if IN_SIMULATOR:
             self._mqtt = None
@@ -93,7 +94,10 @@ class Robot(metaclass=FinalMeta):
         else:
             self._init_power_board()
         self._init_aux_boards(manual_boards, ignored_arduinos, raw_ports)
-        self._init_camera()
+        if customCamera:
+            self._cameras = MappingProxyType({})  # Set up an empty cameras mapping if using a custom camera
+        else:
+            self._init_camera()
         self._log_connected_boards()
 
         if wait_for_start:
@@ -287,7 +291,18 @@ class Robot(metaclass=FinalMeta):
         :raises RuntimeError: If there is not exactly one Arduino connected
         """
         return singular(self._arduinos)
+    @property
+    #! Verify functionality of this cameras property
+    def cameras(self) -> Mapping[str, AprilCamera]:
+        """
+        !untested
+        Access the cameras connected to the robot.
 
+        These are indexed by their serial number.
+
+        :return: A mapping of serial numbers to camera objects
+        """
+        return self._cameras
     @property
     def camera(self) -> AprilCamera:
         """

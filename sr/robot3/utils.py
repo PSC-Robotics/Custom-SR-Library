@@ -277,6 +277,7 @@ def get_simulator_boards(board_filter: str = '') -> list[BoardInfo]:
 
         simulator_boards.append(board_info)
 
+    
     return simulator_boards
 
 

@@ -1,15 +1,13 @@
-# sr-robot3
+# PSC Custom SR Library
 
-[![Lint & build](https://github.com/srobo/sr-robot/actions/workflows/test_build.yml/badge.svg)](https://github.com/srobo/sr-robot/actions/workflows/test_build.yml)
-[![PyPI version](https://badge.fury.io/py/sr-robot3.svg)](https://badge.fury.io/py/sr-robot3)
-[![Documentation Status](https://readthedocs.org/projects/pip/badge/?version=stable)](http://pip.pypa.io/en/stable/?badge=stable)
+> **PSC Robotics fork** of [`srobo/sr-robot3`](https://github.com/srobo/sr-robot3).
+> Adds stepper motor support, Arduino Uno R4 WiFi, and a custom camera interface.
+
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat)](https://opensource.org/licenses/MIT)
-![Bees](https://img.shields.io/badge/bees-110%25-yellow.svg)
+![PSC Robotics](https://img.shields.io/badge/PSC-Robotics-blue.svg)
+![Upstream](https://img.shields.io/badge/upstream-srobo%2Fsr--robot3-lightgrey.svg)
 
-`sr-robot3` - Python 3 API for Student Robotics Kit
-
-This is the API for Student Robotics, library for writing Robotics APIs.
-It will first be deployed at Student Robotics 2024.
+`sr-robot3` - Python 3 API for Student Robotics Kit, customised for PSC Robotics.
 
 ## Installation
 

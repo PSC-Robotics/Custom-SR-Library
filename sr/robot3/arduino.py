@@ -27,6 +27,7 @@ else:
 SUPPORTED_VID_PIDS = {
     (0x2341, 0x0043),  # Arduino Uno rev 3
     (0x2A03, 0x0043),  # Arduino Uno rev 3
+    (0x2341, 0x1002),  # Arduino Uno r4 WiFi
     (0x1A86, 0x7523),  # Uno
     (0x10C4, 0xEA60),  # Ruggeduino
     (0x16D0, 0x0613),  # Ruggeduino
@@ -161,7 +162,7 @@ class Arduino(Board):
         """
         boards = {}
         # The filter here is the name of the emulated board in the simulator
-        for board_info in get_simulator_boards('Arduino'):
+        for board_info in get_simulator_boards('Arduino')+get_simulator_boards("StepperArduino"):
 
             # Create board identity from the info given
             initial_identity = BoardIdentity(
@@ -311,9 +312,44 @@ class Arduino(Board):
         response = self._serial.query(f'u{pulse_id}{echo_id}', endl=ENDLINE)
         return int(response)
 
-    def __repr__(self) -> str:
-        return f"<{self.__class__.__qualname__}: {self._serial}>"
+    @log_to_debug
+    def stepper_step(self, stepperID: int, steps: int, backwards: bool = False) -> None:
+        """
+        Sets the number of steps for a specific motor to move.
+        This does NOT move the motor. Call go() to start movement.
+        """
+        if steps < 0:
+            backwards = not backwards
+            steps = -steps
+        steps = int(steps)
+        steps = steps % 100000
+        # Command: 's' + ID + Dir(0/1) + Steps(5 digits)
+        # Example: s1002000 (Set Motor 1, Fwd, 2000 steps)
+        cmd = f's{stepperID}{int(backwards)}{int(steps):05d}'
+        #logger.warning(f"Stepper command {cmd} may not be fully supported in the simulator")
+        self._serial.write(cmd, endl=ENDLINE)
 
+    @log_to_debug
+    def stepper_go(self) -> str:
+        """
+        Triggers all motors to move to their set targets simultaneously.
+        Non-blocking.
+        """
+        # Command: 'g'
+        #logger.warning(f"Stepper command 'g' may not be fully supported in the simulator")
+        response = self._serial.query('g', endl=ENDLINE)
+        return response
+    
+    @log_to_debug
+    def stepper_speed(self, stepperID:int, maxSpeed: float) -> str:
+        maxSpeed = int((maxSpeed % 1000) * 100)
+        cmd = f'x{stepperID}{maxSpeed:05d}'
+        self._serial.query(cmd, endl=ENDLINE)
+    @log_to_debug
+    def stepper_dip_step(self, stepperID:int, steps: int) -> str:
+        steps = int(steps % 100000)
+        cmd = f'd{stepperID}{steps:05d}'
+        self._serial.query(cmd, endl=ENDLINE)
 
 class Pin:
     """
@@ -367,8 +403,8 @@ class Pin:
         :raises IOError: If this pin cannot be controlled.
         """
         self._check_if_disabled()
-        if not isinstance(value, GPIOPinMode):
-            raise IOError('Pin mode only supports being set to a GPIOPinMode')
+        #if not isinstance(value, GPIOPinMode):
+         #   raise IOError('Pin mode only supports being set to a GPIOPinMode')
 
         mode_char = MODE_CHAR_MAP.get(value)
         if mode_char is None:
