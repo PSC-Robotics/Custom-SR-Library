@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import warnings
 from enum import IntEnum, unique
 from typing import Optional
@@ -15,6 +16,11 @@ try:
     import RPi.GPIO as GPIO  # isort: ignore
     HAS_HAT = True if not IN_SIMULATOR else False
 except ImportError:
+    HAS_HAT = False
+
+# Robots without a Student Robotics KCH hat set SR_KCH_HAT=0 so the API
+# leaves the hat's GPIO pins alone; they may be wired to other hardware.
+if os.environ.get('SR_KCH_HAT', '1') == '0':
     HAS_HAT = False
 
 
@@ -81,10 +87,13 @@ class KCH:
     """KCH Board."""
     __slots__ = ('_leds', '_pwm')
 
-    def __init__(self) -> None:
+    def __init__(self, chain_leds: Optional[tuple['LED', ...]] = None) -> None:
         self._leds: tuple[LED, ...]
 
-        if HAS_HAT:
+        if chain_leds is not None and not HAS_HAT and not IN_SIMULATOR:
+            # PSC robots: the user LEDs are WS2812s chained after the status LED.
+            self._leds = chain_leds
+        elif HAS_HAT:
             GPIO.setmode(GPIO.BCM)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")

@@ -1,6 +1,7 @@
 """The Arduino module provides an interface to the Arduino firmware."""
 from __future__ import annotations
 
+import atexit
 import logging
 from enum import Enum, IntEnum
 from types import MappingProxyType
@@ -10,6 +11,8 @@ from serial.tools.list_ports import comports
 
 from .exceptions import IncorrectBoardError
 from .logging import log_to_debug
+from .motor_board import MotorPower
+from .pin_motors import DCMotor, Stepper
 from .serial_wrapper import SerialWrapper
 from .utils import (
     IN_SIMULATOR, Board, BoardIdentity,
@@ -18,20 +21,50 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 BAUDRATE = 115200
+MAX_STEPPER_COMMAND_US = 350_000
+MAX_STEPPER_DELAY_US = 10_000
+MIN_STEPPER_DELAY_US = 2
+MAX_STEPPER_STEPS = 99999
+DEFAULT_STEP_DELAY_US = 1000
+STEPPER_PIN_COMMAND = 's'
+PWM_COMMAND = 'w'
 if IN_SIMULATOR:
     # Place each command on a new line in the simulator to simplify the implementation
     ENDLINE = '\n'
 else:
     ENDLINE = ''
 
+# USB IDs of boards the PSC firmware runs on, from the Arduino cores' boards.txt.
+# The board is only used if it then answers with SR-compatible firmware.
 SUPPORTED_VID_PIDS = {
-    (0x2341, 0x0043),  # Arduino Uno rev 3
-    (0x2A03, 0x0043),  # Arduino Uno rev 3
-    (0x2341, 0x1002),  # Arduino Uno r4 WiFi
-    (0x1A86, 0x7523),  # Uno
-    (0x10C4, 0xEA60),  # Ruggeduino
-    (0x16D0, 0x0613),  # Ruggeduino
+    # Uno R3, Uno Mini
+    (0x2341, 0x0043), (0x2341, 0x0001), (0x2341, 0x0243), (0x2341, 0x006A),
+    (0x2341, 0x0062), (0x2A03, 0x0043),
+    # Uno R4 Minima and WiFi
+    (0x2341, 0x0069), (0x2341, 0x0369), (0x2341, 0x1002), (0x2341, 0x006D),
+    # Mega 2560
+    (0x2341, 0x0010), (0x2341, 0x0042), (0x2341, 0x0210), (0x2341, 0x0242),
+    (0x2A03, 0x0010), (0x2A03, 0x0042),
+    # Leonardo and Micro (running a sketch, not the bootloader)
+    (0x2341, 0x8036), (0x2A03, 0x8036), (0x2341, 0x8037), (0x2A03, 0x8037),
+    (0x2341, 0x8237),
+    # Nano Every, Uno WiFi Rev2
+    (0x2341, 0x0058), (0x03EB, 0x2145),
+    # Due (Programming Port)
+    (0x2341, 0x003D), (0x2A03, 0x003D),
+    # Zero (Programming Port), Nano 33 IoT, MKR WiFi 1010, MKR Zero
+    (0x03EB, 0x2157), (0x2341, 0x8057), (0x2341, 0x8054), (0x2341, 0x804F),
+    # Clones with CH340 / CH9102 USB chips
+    (0x1A86, 0x7523), (0x1A86, 0x55D4),
+    # Ruggeduino
+    (0x10C4, 0xEA60), (0x16D0, 0x0613),
 }
+
+# Firmware from this version reports its analog reference voltage ('m' command).
+ANALOG_REFERENCE_FW_VERSION = 5
+# Firmware from this version can set PWM duty cycles ('w' command), for DC motors.
+PWM_FW_VERSION = 6
+DEFAULT_ANALOG_REFERENCE_V = 5.0
 
 
 class GPIOPinMode(str, Enum):
@@ -67,12 +100,13 @@ class Arduino(Board):
     """
     The Arduino board interface.
 
-    This is intended to be used with Arduino Uno boards running the SR firmware.
+    This is intended to be used with Arduino boards running the SR or PSC
+    firmware. Pins are numbered like an Uno (2-13, A0-A5) on every board.
 
     :param serial_port: The serial port to connect to.
     :param initial_identity: The identity of the board, as reported by the USB descriptor.
     """
-    __slots__ = ('_serial_num', '_serial', '_pins', '_identity')
+    __slots__ = ('_serial_num', '_serial', '_pins', '_identity', '_motors', '_claims')
 
     @staticmethod
     def get_board_type() -> str:
@@ -108,11 +142,40 @@ class Arduino(Board):
             + tuple(Pin(self._serial, index, supports_analog=True) for index in range(14, 20))
         )
 
+        # Motors by kind and pins, and which motor uses each pin.
+        self._motors: dict[tuple, object] = {}
+        self._claims: dict[int, tuple] = {}
+
         self._identity = self.identify()
         # Arduino board type is not validated to allow for custom firmwares
         if not self._identity.board_type.startswith('SR'):
             raise IncorrectBoardError(self._identity.board_type, 'SR*')
         self._serial.set_identity(self._identity)
+
+        analog_reference = self._read_analog_reference()
+        for pin in self._pins:
+            pin._analog_reference = analog_reference
+
+    def _read_analog_reference(self) -> float:
+        """
+        Get the voltage that an analog reading's full scale represents.
+
+        3.3V boards such as the Due read up to 3.3V. Firmware before version 5
+        doesn't report it, so 5V is assumed, as on an Uno.
+        """
+        if self._firmware_version() < ANALOG_REFERENCE_FW_VERSION:
+            return DEFAULT_ANALOG_REFERENCE_V
+        try:
+            return int(self._serial.query('m', endl=ENDLINE)) / 1000
+        except ValueError:
+            return DEFAULT_ANALOG_REFERENCE_V
+
+    def _firmware_version(self) -> int:
+        """Get the firmware's major version, or 0 if it doesn't report a number."""
+        try:
+            return int(self._identity.sw_version.split('.')[0])
+        except ValueError:
+            return 0
 
     @classmethod
     def _get_valid_board(
@@ -162,7 +225,7 @@ class Arduino(Board):
         """
         boards = {}
         # The filter here is the name of the emulated board in the simulator
-        for board_info in get_simulator_boards('Arduino')+get_simulator_boards("StepperArduino"):
+        for board_info in get_simulator_boards('Arduino'):
 
             # Create board identity from the info given
             initial_identity = BoardIdentity(
@@ -313,43 +376,179 @@ class Arduino(Board):
         return int(response)
 
     @log_to_debug
-    def stepper_step(self, stepperID: int, steps: int, backwards: bool = False) -> None:
+    def stepper_move(
+        self,
+        step_pin: int,
+        direction_pin: int,
+        steps: int,
+        *,
+        direction: bool = True,
+        step_delay_us: int = 1000,
+    ) -> None:
+        """Move a step/direction driver by a finite number of steps.
+
+        The Arduino generates one 2 microsecond STEP pulse per step and holds
+        the STEP line low for ``step_delay_us`` between pulses. This is a
+        blocking operation; the maximum pulse train is bounded to fit within
+        the serial command timeout. Acceleration and position tracking are not
+        provided.
+
+        :param step_pin: Arduino pin connected to the driver's STEP input.
+        :param direction_pin: Arduino pin connected to the driver's DIR input.
+        :param steps: Number of rising STEP edges to generate (1 to 99999).
+        :param direction: True drives DIR high; False drives DIR low.
+        :param step_delay_us: Low time between STEP pulses in microseconds.
+        :raises ValueError: If pins, step count, direction, or timing are invalid.
+        :raises RuntimeError: If the attached firmware does not support this command.
         """
-        Sets the number of steps for a specific motor to move.
-        This does NOT move the motor. Call go() to start movement.
-        """
-        if steps < 0:
-            backwards = not backwards
-            steps = -steps
-        steps = int(steps)
-        steps = steps % 100000
-        # Command: 's' + ID + Dir(0/1) + Steps(5 digits)
-        # Example: s1002000 (Set Motor 1, Fwd, 2000 steps)
-        cmd = f's{stepperID}{int(backwards)}{int(steps):05d}'
-        #logger.warning(f"Stepper command {cmd} may not be fully supported in the simulator")
-        self._serial.write(cmd, endl=ENDLINE)
+        if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 99999:
+            raise ValueError("steps must be an integer from 1 to 99999")
+        if not isinstance(direction, bool):
+            raise ValueError("direction must be a bool")
+        if (
+            not isinstance(step_delay_us, int)
+            or isinstance(step_delay_us, bool)
+            or not 2 <= step_delay_us <= MAX_STEPPER_DELAY_US
+        ):
+            raise ValueError(
+                f"step_delay_us must be an integer from 2 to {MAX_STEPPER_DELAY_US}"
+            )
+        if steps * (step_delay_us + 100) > MAX_STEPPER_COMMAND_US:
+            raise ValueError(
+                "stepper move is too long for one serial command; use smaller moves"
+            )
+        if step_pin == direction_pin:
+            raise ValueError("step_pin and direction_pin must be different")
+        for pin in (step_pin, direction_pin):
+            owner = self._claims.get(pin)
+            if owner is not None and owner[0] != 'stepper':
+                raise ValueError(f"Pin {pin} is already used by another motor")
+
+        try:
+            step_pin_id = self.map_pin_number(step_pin)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid step pin provided") from None
+        try:
+            direction_pin_id = self.map_pin_number(direction_pin)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid direction pin provided") from None
+
+        command = (
+            f"{STEPPER_PIN_COMMAND}{step_pin_id}{direction_pin_id}"
+            f"{int(direction)}{steps:05d}{step_delay_us:05d}"
+        )
+        response = self._serial.query(command, endl=ENDLINE)
+        if response != "OK":
+            raise RuntimeError(
+                "Arduino firmware does not support stepper_move; update its firmware"
+            )
+
+    def _claim(self, key: tuple, pins: tuple[int, ...], names: tuple[str, ...]) -> None:
+        for pin, name in zip(pins, names):
+            try:
+                self.map_pin_number(pin)
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid {name.replace('_', ' ')} provided") from None
+        if len(set(pins)) != len(pins):
+            raise ValueError(f"{' and '.join(names)} must be different")
+        for pin in pins:
+            owner = self._claims.get(pin)
+            if owner is not None and owner != key:
+                raise ValueError(f"Pin {pin} is already used by another motor")
+        for pin in pins:
+            self._claims[pin] = key
+
+    def _set_duty(self, pin: int, duty: float) -> None:
+        response = self._serial.query(
+            f"{PWM_COMMAND}{self.map_pin_number(pin)}{round(duty * 255):03d}", endl=ENDLINE)
+        if response != "OK":
+            raise RuntimeError(
+                "Arduino firmware does not support DC motors; update its firmware")
+
+    def _stop_dc_motors(self) -> None:
+        """Let the DC motors coast while exiting. Registered as an exit handler."""
+        for motor in self._motors.values():
+            if isinstance(motor, DCMotor):
+                try:
+                    motor.power = MotorPower.COAST
+                except Exception:
+                    logger.warning(f"Failed to stop {motor!r}.")
 
     @log_to_debug
-    def stepper_go(self) -> str:
+    def dc_motor(self, in1_pin: int, in2_pin: int) -> DCMotor:
         """
-        Triggers all motors to move to their set targets simultaneously.
-        Non-blocking.
+        Get a DC motor connected through a two-input driver, such as a DRV8871.
+
+        Set its ``power`` from -1 to 1, or to ``BRAKE`` or ``COAST``. Both pins must
+        support PWM (on an Uno: 3, 5, 6, 9, 10 and 11). Asking for the same pins again
+        returns the same motor. The motor starts coasting, and is stopped when your
+        code ends.
+
+        :param in1_pin: Arduino pin connected to the driver's IN1 input.
+        :param in2_pin: Arduino pin connected to the driver's IN2 input.
+        :raises ValueError: If a pin is invalid or used by another motor.
+        :raises RuntimeError: If the Arduino's firmware is too old for DC motors.
         """
-        # Command: 'g'
-        #logger.warning(f"Stepper command 'g' may not be fully supported in the simulator")
-        response = self._serial.query('g', endl=ENDLINE)
-        return response
-    
+        key = ('dc', in1_pin, in2_pin)
+        if key not in self._motors:
+            self._claim(key, (in1_pin, in2_pin), ('in1_pin', 'in2_pin'))
+            if self._firmware_version() < PWM_FW_VERSION:
+                del self._claims[in1_pin], self._claims[in2_pin]
+                raise RuntimeError(
+                    f"DC motors need Arduino firmware version {PWM_FW_VERSION} or later; "
+                    "update its firmware"
+                )
+            if not any(isinstance(motor, DCMotor) for motor in self._motors.values()):
+                atexit.register(self._stop_dc_motors)
+
+            def set_inputs(in1: float, in2: float) -> None:
+                self._set_duty(in1_pin, in1)
+                self._set_duty(in2_pin, in2)
+
+            self._motors[key] = DCMotor(set_inputs, f"IN1=pin {in1_pin} IN2=pin {in2_pin}")
+        return self._motors[key]  # type: ignore[return-value]
+
     @log_to_debug
-    def stepper_speed(self, stepperID:int, maxSpeed: float) -> str:
-        maxSpeed = int((maxSpeed % 1000) * 100)
-        cmd = f'x{stepperID}{maxSpeed:05d}'
-        self._serial.query(cmd, endl=ENDLINE)
-    @log_to_debug
-    def stepper_dip_step(self, stepperID:int, steps: int) -> str:
-        steps = int(steps % 100000)
-        cmd = f'd{stepperID}{steps:05d}'
-        self._serial.query(cmd, endl=ENDLINE)
+    def stepper(
+        self, step_pin: int, direction_pin: int, *, step_delay_us: Optional[int] = None,
+    ) -> Stepper:
+        """
+        Get a stepper motor connected through a step/direction driver, such as an A4988.
+
+        Move it with ``move(steps)``; it counts its ``position`` in steps. Long moves
+        are split into several commands, so there is no limit on how long a move takes.
+        Asking for the same pins again returns the same motor.
+
+        :param step_pin: Arduino pin connected to the driver's STEP input.
+        :param direction_pin: Arduino pin connected to the driver's DIR input.
+        :param step_delay_us: The time between steps, in microseconds (2 to 10000),
+            when a move doesn't give one. Defaults to 1000 for a new motor.
+        :raises ValueError: If a pin is invalid or used by another motor.
+        """
+        key = ('stepper', step_pin, direction_pin)
+        if key not in self._motors:
+            self._claim(key, (step_pin, direction_pin), ('step_pin', 'direction_pin'))
+
+            def move_steps(steps: int, direction: bool, delay: int) -> None:
+                self.stepper_move(
+                    step_pin, direction_pin, steps, direction=direction, step_delay_us=delay)
+
+            def max_steps(delay: int) -> int:
+                return max(1, min(MAX_STEPPER_STEPS, MAX_STEPPER_COMMAND_US // (delay + 100)))
+
+            self._motors[key] = Stepper(
+                move_steps, max_steps, MIN_STEPPER_DELAY_US, MAX_STEPPER_DELAY_US,
+                DEFAULT_STEP_DELAY_US, f"STEP=pin {step_pin} DIR=pin {direction_pin}",
+            )
+        motor = self._motors[key]
+        assert isinstance(motor, Stepper)
+        if step_delay_us is not None:
+            motor.step_delay_us = step_delay_us
+        return motor
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__qualname__}: {self._serial}>"
+
 
 class Pin:
     """
@@ -360,7 +559,9 @@ class Pin:
     :param supports_analog: Whether the pin supports analog reads.
     :param disabled: Whether the pin can be controlled.
     """
-    __slots__ = ('_serial', '_index', '_supports_analog', '_disabled', '_mode')
+    __slots__ = (
+        '_serial', '_index', '_supports_analog', '_disabled', '_mode', '_analog_reference',
+    )
 
     def __init__(
         self,
@@ -371,6 +572,7 @@ class Pin:
     ):
         self._serial = serial
         self._index = index
+        self._analog_reference = DEFAULT_ANALOG_REFERENCE_V
         self._supports_analog = supports_analog
         self._disabled = disabled
         self._mode = GPIOPinMode.INPUT
@@ -403,8 +605,8 @@ class Pin:
         :raises IOError: If this pin cannot be controlled.
         """
         self._check_if_disabled()
-        #if not isinstance(value, GPIOPinMode):
-         #   raise IOError('Pin mode only supports being set to a GPIOPinMode')
+        if not isinstance(value, GPIOPinMode):
+            raise IOError('Pin mode only supports being set to a GPIOPinMode')
 
         mode_char = MODE_CHAR_MAP.get(value)
         if mode_char is None:
@@ -450,10 +652,11 @@ class Pin:
         Get the analog voltage on the pin.
 
         This is returned in volts. Only pins A0-A5 support analog reads.
+        Readings range from 0 to 5V, or 0 to 3.3V on 3.3V boards such as the Due.
 
         :raises IOError: If the pin or its current mode does not support analog read.
         :raises IOError: If this pin cannot be controlled.
-        :return: The analog voltage on the pin, ranges from 0 to 5.
+        :return: The analog voltage on the pin, from 0 to the board's reference voltage.
         """
         ADC_MAX = 1023  # 10 bit ADC
         ADC_MIN = 0
@@ -465,7 +668,7 @@ class Pin:
             raise IOError('Pin does not support analog read')
         response = self._serial.query(self._build_command('a'), endl=ENDLINE)
         # map the response from the ADC range to the voltage range
-        return map_to_float(int(response), ADC_MIN, ADC_MAX, 0.0, 5.0)
+        return map_to_float(int(response), ADC_MIN, ADC_MAX, 0.0, self._analog_reference)
 
     def _check_if_disabled(self) -> None:
         """

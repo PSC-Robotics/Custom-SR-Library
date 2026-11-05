@@ -77,6 +77,49 @@ def test_arduino_custom_command(arduino_serial: MockArduino) -> None:
     assert arduino.command(f"test:{pin_str}") == "ACK123"
 
 
+def test_arduino_stepper_move(arduino_serial: MockArduino) -> None:
+    arduino = arduino_serial.arduino_board
+    arduino_serial.serial_wrapper._add_responses([
+        ("sef10001201000", "OK"),
+        ("sfg00000300002", "OK"),
+    ])
+
+    arduino.stepper_move(4, 5, 12, step_delay_us=1000)
+    arduino.stepper_move(5, 6, 3, direction=False, step_delay_us=2)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "keyword_arguments", "message"),
+    [
+        ((0, 5, 1), {}, "Invalid step pin"),
+        ((4, 4, 1), {}, "must be different"),
+        ((4, 5, 0), {}, "steps must be"),
+        ((4, 5, 4000), {}, "too long"),
+        ((4, 5, 1), {"step_delay_us": 10001}, "step_delay_us must be"),
+    ],
+)
+def test_arduino_stepper_move_validates_arguments(
+    arduino_serial: MockArduino,
+    arguments: tuple[int, int, int],
+    keyword_arguments: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        arduino_serial.arduino_board.stepper_move(*arguments, **keyword_arguments)
+
+
+def test_arduino_stepper_move_requires_updated_firmware(
+    arduino_serial: MockArduino,
+) -> None:
+    arduino = arduino_serial.arduino_board
+    arduino_serial.serial_wrapper._add_responses([
+        ("sef10000101000", ""),
+    ])
+
+    with pytest.raises(RuntimeError, match="update its firmware"):
+        arduino.stepper_move(4, 5, 1, step_delay_us=1000)
+
+
 def test_arduino_pins(arduino_serial: MockArduino) -> None:
     """
     Test the arduino pins properties and methods.
@@ -272,3 +315,41 @@ def test_physical_arduino_board_discovery() -> None:
     asset_tag = identity.asset_tag
     assert arduino_board == arduino_boards[asset_tag], \
         "Singular arduino board is not the same as the one in the list of arduino boards."
+
+
+@pytest.mark.parametrize(
+    ("version", "requests", "full_scale"),
+    [
+        # PSC firmware 5 reports its analog reference: 3.3V on a Due, 5V on an Uno
+        ("SRcustom:5", [("m", "3300")], 3.3),
+        ("SRcustom:5", [("m", "5000")], 5.0),
+        # Older firmware isn't asked, and 5V is assumed
+        ("SRcustom:4", [], 5.0),
+    ],
+)
+def test_arduino_analog_reference(monkeypatch, version, requests, full_scale) -> None:
+    serial_wrapper = MockSerialWrapper([("v", version), *requests])
+    monkeypatch.setattr('sr.robot3.arduino.SerialWrapper', serial_wrapper)
+    arduino_board = Arduino('test://', initial_identity=BoardIdentity(asset_tag='TEST123'))
+    serial_wrapper._add_responses([("io", ""), ("ao", "1023"), ("ao", "0")])
+
+    arduino_board.pins[AnalogPins.A0].mode = GPIOPinMode.INPUT
+    assert arduino_board.pins[AnalogPins.A0].analog_read() == pytest.approx(full_scale)
+    assert arduino_board.pins[AnalogPins.A0].analog_read() == 0
+    assert serial_wrapper.request_index == len(serial_wrapper.responses)
+
+
+@pytest.mark.parametrize(
+    ("vid", "pid"),
+    [
+        (0x2341, 0x003D),  # Due (Programming Port)
+        (0x2341, 0x0042),  # Mega 2560
+        (0x2341, 0x8036),  # Leonardo
+        (0x2341, 0x0069),  # Uno R4 Minima
+        (0x2341, 0x0058),  # Nano Every
+        (0x1A86, 0x7523),  # CH340 clone
+    ],
+)
+def test_more_arduino_boards_are_detected(vid, pid) -> None:
+    from sr.robot3.arduino import SUPPORTED_VID_PIDS
+    assert (vid, pid) in SUPPORTED_VID_PIDS
