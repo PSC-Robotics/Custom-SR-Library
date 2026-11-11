@@ -51,6 +51,10 @@ jobs:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
     runs-on: ubuntu-latest
     needs: test
+    # PyPI's trusted publisher for psc-sr-robot3 names this environment
+    environment:
+      name: pypi
+      url: https://pypi.org/p/psc-sr-robot3
     steps:
     - uses: actions/checkout@v4
       with:
@@ -73,6 +77,11 @@ jobs:
         name: package
         path: |
           dist
+    - name: Check the package
+      run: |
+        python -m pip install twine
+        python -m twine check --strict dist/*
     - name: Publish to PyPi
-      if: ${{ github.ref_type	== 'tag' }}
+      # Version tags only, such as 2026.0.3.18
+      if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, '20') }}
       uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,32 +1,30 @@
-# PSC Custom SR Library
-
-> **PSC Robotics fork** of [`srobo/sr-robot3`](https://github.com/srobo/sr-robot3), at version `2026.0.3+psc.15`.
-> This is a copy of the library in [`PSC-Comp-OS/psc-sr-robot3`](https://github.com/PSC-Robotics/PSC-Comp-OS/tree/main/psc-sr-robot3), which is what ships on PSC Robotics OS. Changes are made there first.
+# psc-sr-robot3
 
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat)](https://opensource.org/licenses/MIT)
-![PSC Robotics](https://img.shields.io/badge/PSC-Robotics-blue.svg)
-![Upstream](https://img.shields.io/badge/upstream-srobo%2Fsr--robot3-lightgrey.svg)
 
-`sr-robot3` - Python 3 API for Student Robotics Kit, customised for PSC Robotics.
+`psc-sr-robot3` is PSC Robotics' version of [sr-robot3](https://github.com/srobo/sr-robot),
+the Student Robotics Python API. It adds PSC's brain board: GPIO motors and steppers,
+servo drivers and I2C, the brain board LED and battery sensor, the buzzer and gamepads.
+See the [PSC Robotics docs](https://docs.psc-robotics.uk).
 
-PSC Robotics additions: DC motors and stepper motors on the Raspberry Pi and Arduino, I2C devices and buses on any free pins, PCA9685 servo drivers, WS2812 LEDs, the buzzer, bus servos, gamepads and more Arduino boards. See the [PSC Robotics docs](https://docs.psc-robotics.uk).
-
-This is the API for Student Robotics, library for writing Robotics APIs.
-It will first be deployed at Student Robotics 2024.
+Your code imports it as `sr.robot3`, the same as Student Robotics' library, so the two
+can't be installed together. The PSC Robotics OS image already has it installed; install
+it on a computer to get code completion and type checking while you write robot code.
 
 ## Installation
 
-If you wish to install openCV from your package manager, you can install the base package with:
-
 ```bash
-pip install sr-robot3
+pip install psc-sr-robot3
 ```
 
-To install the full package, including openCV, you can install with:
+To include OpenCV, for the camera:
 
 ```bash
-pip install sr-robot3[vision]
+pip install "psc-sr-robot3[vision]"
 ```
+
+Versions are Student Robotics' base version followed by PSC's own release number:
+2026.0.3.18 is PSC release 18 of sr-robot3 2026.0.3.
 
 ## Usage
 
@@ -73,14 +71,14 @@ A new tone replaces the one playing. Tones are played by the robot's status
 service, which also beeps when code is waiting for the start button, when start
 is pressed, and with fast short beeps when code crashes.
 
-### Steppers on the Raspberry Pi GPIO
+### Steppers on the brain board's GPIO pins
 
-`robot.raspberry_pi.stepper_move(step_pin, direction_pin, steps)` drives a
+`robot.brain.stepper_move(step_pin, direction_pin, steps)` drives a
 step/direction stepper driver wired to the Pi's GPIO header, using BCM GPIO
 numbers. It takes the same arguments as `arduino.stepper_move`, but has no
 350 ms limit: `steps` can be up to 1000000 and `step_delay_us` from 50 to
 1000000. Timing is done in software, so step timing can vary slightly. GPIO 5,
-13, 17, 22 and 27 are used by the robot and can't be used.
+13 and 18 are used by the robot and can't be used.
 
 ### Multiple cameras
 

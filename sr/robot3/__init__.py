@@ -1,9 +1,10 @@
 from .arduino import AnalogPins, GPIOPinMode
 from .astoria import RobotMode
 from .exceptions import (
-    BoardDisconnectionError, I2CError, MetadataKeyError, MetadataNotReadyError,
+    BatteryMonitorError, BoardDisconnectionError,
+    I2CError, MetadataKeyError, MetadataNotReadyError,
 )
-from .kch import Colour, UserLED
+from .kch import Colour
 from .logging import add_trace_level
 from .motor_board import MotorPower
 from .power_board import Note, PowerOutputPosition
@@ -37,10 +38,6 @@ OUT_L1 = PowerOutputPosition.L1
 OUT_L3 = PowerOutputPosition.L3
 OUT_FIVE_VOLT = PowerOutputPosition.FIVE_VOLT
 
-LED_A = UserLED.A
-LED_B = UserLED.B
-LED_C = UserLED.C
-
 __all__ = [
     "A0",
     "A1",
@@ -49,6 +46,7 @@ __all__ = [
     "A4",
     "A5",
     "BRAKE",
+    "BatteryMonitorError",
     "BoardDisconnectionError",
     "COAST",
     "COMP",
@@ -57,9 +55,6 @@ __all__ = [
     "I2CError",
     "INPUT",
     "INPUT_PULLUP",
-    "LED_A",
-    "LED_B",
-    "LED_C",
     "MetadataKeyError",
     "MetadataNotReadyError",
     "Note",
