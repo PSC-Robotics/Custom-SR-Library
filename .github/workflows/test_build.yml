@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]  # ubuntu-latest (26.04) has no Python 3.9
         py_version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
         include:
           - os: windows-latest
